@@ -7,6 +7,7 @@
 #include "Eigen-3.3/Eigen/QR"
 #include "helpers.h"
 #include "json.hpp"
+#include "splines.h"
 
 // for convenience
 using nlohmann::json;
@@ -50,8 +51,11 @@ int main() {
     map_waypoints_dy.push_back(d_y);
   }
 
+  int lane = 1;
+  double ref_vel = 0;
+
   h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,
-               &map_waypoints_dx,&map_waypoints_dy]
+               &map_waypoints_dx,&map_waypoints_dy,&lane, &ref_vel]
               (uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
@@ -97,6 +101,136 @@ int main() {
            * TODO: define a path made up of (x,y) points that the car will visit
            *   sequentially every .02 seconds
            */
+
+          int previous_size = previous_path_x.size();
+
+          bool too_close=false;
+
+          if(previous_size>0){
+            car_s=end_path_s;
+          }
+
+          //Iterate over the sensor fusion list to get the data(x,y,vx, vy, s, d) of all cars in the current lane
+          for(int i=0;i<sensor_fusion.size();i++){
+            double d=sensor_fusion[i][6];
+            //Check whether the car in the list is in the same lane as our car
+            if((d<2+4*lane+2) && (d>2+4*lane-2)){
+              double vx=sensor_fusion[i][3];
+              double vy=sensor_fusion[i][4];
+              double check_speed=sqrt(vx*vx+vy*vy);
+              double check_car_s=sensor_fusion[i][5];
+
+              check_car_s+=(double)previous_size*0.02*check_speed;
+              if(check_car_s>car_s && (check_car_s-car_s)<30){
+                too_close=true;
+                lane = lane > 0 ? 0: lane;
+              }
+            }
+          }
+          
+          //If the car in front is too close reduce the reference velocity at the rate of 7.24m per second
+          if(too_close){
+            ref_vel-=0.324;
+          }
+          //If the velocity of the car is less than 49.5mph then gradually increase it at 5m per second
+          else if(ref_vel<50-0.224){
+            ref_vel+=0.224;
+          }
+
+          vector<double> ptsx;
+          vector<double> ptsy;
+
+          double ref_x=car_x;
+          double ref_y=car_y;
+          double ref_yaw=deg2rad(car_yaw);
+
+          //If the previous path has no points left  then use current car x and y to calculate previous car x & y and add to pts list
+          if(previous_size<2){
+
+              double prev_car_x=car_x-cos(car_yaw);
+              double prev_car_y=car_y-sin(car_yaw);
+              ptsx.push_back(prev_car_x);
+              ptsx.push_back(car_x);
+              ptsy.push_back(prev_car_y);
+              ptsy.push_back(car_y);
+              
+          }
+          //If previous path has enough points add the last 2 points to the pts list
+          else{
+            ref_x=previous_path_x[previous_size-1];
+            ref_y=previous_path_y[previous_size-1];
+
+            double ref_prev_x=previous_path_x[previous_size-2];
+            double ref_prev_y=previous_path_y[previous_size-2];
+            ref_yaw=atan2(ref_y-ref_prev_y,ref_x-ref_prev_x);
+
+            ptsx.push_back(ref_prev_x);
+            ptsx.push_back(ref_x);
+
+            ptsy.push_back(ref_prev_y);
+            ptsy.push_back(ref_y);
+          }
+          //Predict future waypoints at distances of 30, 60 and 90m and add to points list
+          vector<double> next_wp_30=getXY(car_s+30,2+4*lane,map_waypoints_s,map_waypoints_x,map_waypoints_y);
+          vector<double> next_wp_60=getXY(car_s+60,2+4*lane,map_waypoints_s,map_waypoints_x,map_waypoints_y);
+          vector<double> next_wp_90=getXY(car_s+90,2+4*lane,map_waypoints_s,map_waypoints_x,map_waypoints_y);
+
+          ptsx.push_back(next_wp_30[0]);
+          ptsx.push_back(next_wp_60[0]);
+          ptsx.push_back(next_wp_90[0]);
+
+          ptsy.push_back(next_wp_30[1]);
+          ptsy.push_back(next_wp_60[1]);
+          ptsy.push_back(next_wp_90[1]);
+          //Convert pts lists from map co-ordinates to car co-ordinates
+          for(int i=0;i<ptsx.size();i++){
+            double shift_x=ptsx[i]-ref_x;
+            double shift_y=ptsy[i]-ref_y;
+
+            ptsx[i]=(shift_x*cos(-ref_yaw)-shift_y*sin(-ref_yaw));
+            ptsy[i]=(shift_x*sin(-ref_yaw)+shift_y*cos(-ref_yaw));
+          }
+
+          tk::spline s;
+          //Use the converted pts list (waypoints) in spline to create a trajectory
+          s.set_points(ptsx,ptsy);
+          //Push remaining points from previous path to the next waypoints list
+          for(int i=0;i<previous_path_x.size();i++){
+            next_x_vals.push_back(previous_path_x[i]);
+            next_y_vals.push_back(previous_path_y[i]);
+          }
+
+          double target_x=30;
+          //Get the y point for the given x point which is 30 m ahead of the current position from the spline
+          double target_y=s(target_x);
+          double target_dist=sqrt(target_x*target_x+target_y*target_y);
+          double x_add_on=0;
+
+          
+
+          //Keeping the remaining points from previous path , calculate 50-remaining points using the spline
+          for(int i=0; i<50-previous_path_x.size(); i++){
+            //Find the number of divisions that the trajectory has to be split into
+            double N=target_dist/(0.02*ref_vel/2.24);
+            //Calculate remaining x and y points (using spline)
+            double x_point=x_add_on+target_x/N;
+            double y_point=s(x_point);
+
+            x_add_on=x_point;
+
+            double x_ref=x_point;
+            double y_ref=y_point;
+            //Convert back from car co-ordinates to map co-ordinates
+            x_point=x_ref*cos(ref_yaw)-y_ref*sin(ref_yaw);
+            y_point=x_ref*sin(ref_yaw)+y_ref*cos(ref_yaw);
+
+            x_point+=ref_x;
+            y_point+=ref_y;
+            //Push the calculated points to the next waypoints list
+            next_x_vals.push_back(x_point);
+            next_y_vals.push_back(y_point);
+
+          }
 
 
           msgJson["next_x"] = next_x_vals;
