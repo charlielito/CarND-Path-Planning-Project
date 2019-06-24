@@ -21,7 +21,7 @@ In this project your goal is to safely navigate around a virtual highway with ot
 ## Implementation
 ---
 ### Results
-The results of the developed algorithm can be seen in the [video result]() or in the following gif.
+The results of the developed algorithm can be seen in the [video result](https://youtu.be/htLay7tiMgs) or in the following gif.
 
 ![alt text][giffy]
 
