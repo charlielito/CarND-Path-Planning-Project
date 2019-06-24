@@ -14,6 +14,13 @@ using nlohmann::json;
 using std::string;
 using std::vector;
 
+float MIN_OBS_DISTANCE = 30; // [m] Gap from car to obstacles
+float DECEL = 0.324; // 0.324 is around 7.24m/s which is under 10m/s2 for jerk requirement
+float ACCEL = 0.224; // 0.224 is around 5m/s which is under 10m/s2 for jerk requirement
+float MAX_SPEED = 49.8; // Maximum speed limit
+float LANE_WIDTH = 4.0; // Lane width
+
+
 int main() {
   uWS::Hub h;
 
@@ -97,14 +104,20 @@ int main() {
           vector<double> next_x_vals;
           vector<double> next_y_vals;
 
-          /**
-           * TODO: define a path made up of (x,y) points that the car will visit
-           *   sequentially every .02 seconds
-           */
-
           int previous_size = previous_path_x.size();
 
-          bool too_close=false;
+          bool current_lane_close=false;
+          bool left_lane_close=false;
+          bool right_lane_close=false;
+
+          // If car in most left lane can't turn to the left
+          if(lane==0){ 
+            left_lane_close = true;
+          }
+          // If car in most right lane can't turn to the right
+          else if(lane==2){
+            right_lane_close = true;
+          }
 
           if(previous_size>0){
             car_s=end_path_s;
@@ -112,31 +125,88 @@ int main() {
 
           //Iterate over the sensor fusion list to get the data(x,y,vx, vy, s, d) of all cars in the current lane
           for(int i=0;i<sensor_fusion.size();i++){
+            // Get cars variables
             double d=sensor_fusion[i][6];
-            //Check whether the car in the list is in the same lane as our car
-            if((d<2+4*lane+2) && (d>2+4*lane-2)){
-              double vx=sensor_fusion[i][3];
-              double vy=sensor_fusion[i][4];
-              double check_speed=sqrt(vx*vx+vy*vy);
-              double check_car_s=sensor_fusion[i][5];
+            double vx=sensor_fusion[i][3];
+            double vy=sensor_fusion[i][4];
+            double check_speed=sqrt(vx*vx+vy*vy);
+            double check_car_s=sensor_fusion[i][5];
+            check_car_s+=(double)previous_size*0.02*check_speed;
 
-              check_car_s+=(double)previous_size*0.02*check_speed;
-              if(check_car_s>car_s && (check_car_s-car_s)<30){
-                too_close=true;
-                lane = lane > 0 ? 0: lane;
+            //Check whether the car in the list is in the same lane as our car
+            if( (d<LANE_WIDTH*lane+LANE_WIDTH) && (d>LANE_WIDTH*lane) ){
+            // check for close enough cars ahead
+            if(check_car_s>car_s && (check_car_s-car_s)<MIN_OBS_DISTANCE){
+                current_lane_close=true;
               }
             }
+
+            // check for close enough cars ahead and back
+            if (abs(check_car_s-car_s) < MIN_OBS_DISTANCE){
+
+              // check for left cars
+              if( (d<LANE_WIDTH*(lane-1)+LANE_WIDTH) && (d>LANE_WIDTH*(lane-1)) && lane!=0 ){
+                bool forward = false;
+                bool backward = false;
+                if (check_car_s>car_s)
+                  forward = true;
+                // for backward check only portion of the min distance
+                else if (abs(check_car_s-car_s) < MIN_OBS_DISTANCE*0.4){
+                  backward = true;
+                }
+
+                left_lane_close = forward || backward;
+              }
+
+              // check for right cars
+              if( (d<LANE_WIDTH*(lane+1)+LANE_WIDTH) && (d>LANE_WIDTH*(lane+1)) && lane!=2 ){
+                bool forward = false;
+                bool backward = false;
+                if (check_car_s>car_s)
+                  forward = true;
+                // for backward check only portion of the min distance
+                else if (abs(check_car_s-car_s) < MIN_OBS_DISTANCE*0.4){
+                  backward = true;
+                }
+
+                right_lane_close = forward || backward;
+              }
+
+              // left_lane_close = check_close_car(d, car_s, check_car_s, lane, 
+              //       LANE_WIDTH, MIN_OBS_DISTANCE, -1, 0, left_lane_close );
+              // right_lane_close = check_close_car(d, car_s, check_car_s, lane, 
+              //       LANE_WIDTH, MIN_OBS_DISTANCE, 1, 2, right_lane_close );
+              
+            }
+          }
+
+          //when possible return to center lane
+          if((lane==0 && !right_lane_close)||(lane==2 && !left_lane_close)){
+            lane = 1;
           }
           
           //If the car in front is too close reduce the reference velocity at the rate of 7.24m per second
-          if(too_close){
-            ref_vel-=0.324;
+          if(current_lane_close){
+            ref_vel-=DECEL;
+
+            // Change lane heuristic (prefer change to right)
+            if(!right_lane_close){
+              lane += 1;
+            }
+            else if(!left_lane_close){
+              lane -= 1;
+            }
           }
           //If the velocity of the car is less than 49.5mph then gradually increase it at 5m per second
-          else if(ref_vel<50-0.224){
-            ref_vel+=0.224;
+          else if(ref_vel<MAX_SPEED-ACCEL){
+            ref_vel+=ACCEL;
           }
 
+          // Print turning information
+          std::cout<<"|car_d: "<< car_d<<"| L_Turn: "<<left_lane_close<<"| R_Turn: "<<right_lane_close<<"| C_Obs: "<<current_lane_close
+            <<"| Lane: "<<lane<<"| Ref_vel: "<<ref_vel<< std::endl;
+
+          // *********************** Control path stuff **********************************
           vector<double> ptsx;
           vector<double> ptsy;
 

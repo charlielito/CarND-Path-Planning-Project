@@ -154,4 +154,24 @@ vector<double> getXY(double s, double d, const vector<double> &maps_s,
   return {x,y};
 }
 
+bool check_close_car(double d, double car_s, double check_car_s, int lane, 
+                    float LANE_WIDTH, float MIN_OBS_DISTANCE, int lane_offset, 
+                    int lane_discard, bool lane_close ){
+  // check for cars in a direction
+  if( (d<LANE_WIDTH*(lane+lane_offset)+LANE_WIDTH) && (d>LANE_WIDTH*(lane+lane_offset)) && lane!=lane_discard ){
+    bool forward = false;
+    bool backward = false;
+    if (check_car_s>car_s)
+      forward = true;
+    // for backward check only portion of the min distance
+    else if (abs(check_car_s-car_s) < MIN_OBS_DISTANCE*0.4){
+      backward = true;
+    }
+
+    lane_close = forward || backward;
+
+  }
+  return lane_close;
+}
+
 #endif  // HELPERS_H
