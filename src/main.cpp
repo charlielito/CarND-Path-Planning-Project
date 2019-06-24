@@ -110,6 +110,9 @@ int main() {
           bool left_lane_close=false;
           bool right_lane_close=false;
 
+          float distance_to_obj = MIN_OBS_DISTANCE;
+          float close_obj_vel = 0;
+
           // If car in most left lane can't turn to the left
           if(lane==0){ 
             left_lane_close = true;
@@ -122,6 +125,15 @@ int main() {
           if(previous_size>0){
             car_s=end_path_s;
           }
+
+          // aux variables for checking cars forward an backwards to left and right
+          bool forward_l = false;
+          bool backward_l = false;
+          bool forward_r = false;
+          bool backward_r = false;
+
+          float left_closest_car = MIN_OBS_DISTANCE*100;
+          float right_closest_car = MIN_OBS_DISTANCE*100;
 
           //Iterate over the sensor fusion list to get the data(x,y,vx, vy, s, d) of all cars in the current lane
           for(int i=0;i<sensor_fusion.size();i++){
@@ -138,46 +150,53 @@ int main() {
             // check for close enough cars ahead
             if(check_car_s>car_s && (check_car_s-car_s)<MIN_OBS_DISTANCE){
                 current_lane_close=true;
+                distance_to_obj = check_car_s - car_s;
+                close_obj_vel = check_speed*2.24; // 2.24 to convert to mph 
               }
             }
 
-            // check for close enough cars ahead and back
-            if (abs(check_car_s-car_s) < MIN_OBS_DISTANCE){
 
-              // check for left cars
-              if( (d<LANE_WIDTH*(lane-1)+LANE_WIDTH) && (d>LANE_WIDTH*(lane-1)) && lane!=0 ){
-                bool forward = false;
-                bool backward = false;
-                if (check_car_s>car_s)
-                  forward = true;
-                // for backward check only portion of the min distance
-                else if (abs(check_car_s-car_s) < MIN_OBS_DISTANCE*0.4){
-                  backward = true;
-                }
-
-                left_lane_close = forward || backward;
+            // check for left cars
+            if( (d<LANE_WIDTH*(lane-1)+LANE_WIDTH) && (d>LANE_WIDTH*(lane-1)) && lane!=0 ){
+              if (check_car_s>car_s){
+                float distance = check_car_s - car_s;
+                if (distance < left_closest_car)
+                  left_closest_car = distance;
               }
-
-              // check for right cars
-              if( (d<LANE_WIDTH*(lane+1)+LANE_WIDTH) && (d>LANE_WIDTH*(lane+1)) && lane!=2 ){
-                bool forward = false;
-                bool backward = false;
+              // check for close enough cars ahead and back
+              if (abs(check_car_s-car_s) < MIN_OBS_DISTANCE){
                 if (check_car_s>car_s)
-                  forward = true;
+                  forward_l = true;
                 // for backward check only portion of the min distance
-                else if (abs(check_car_s-car_s) < MIN_OBS_DISTANCE*0.4){
-                  backward = true;
+                else if (abs(check_car_s-car_s) < MIN_OBS_DISTANCE*0.3){
+                  backward_l = true;
                 }
-
-                right_lane_close = forward || backward;
+                left_lane_close = forward_l || backward_l;
               }
-
-              // left_lane_close = check_close_car(d, car_s, check_car_s, lane, 
-              //       LANE_WIDTH, MIN_OBS_DISTANCE, -1, 0, left_lane_close );
-              // right_lane_close = check_close_car(d, car_s, check_car_s, lane, 
-              //       LANE_WIDTH, MIN_OBS_DISTANCE, 1, 2, right_lane_close );
-              
             }
+
+            // check for right cars
+            if( (d<LANE_WIDTH*(lane+1)+LANE_WIDTH) && (d>LANE_WIDTH*(lane+1)) && lane!=2 ){
+              if (check_car_s>car_s){
+                float distance = check_car_s - car_s;
+                if (distance < right_closest_car)
+                  right_closest_car = distance;
+              }
+              // check for close enough cars ahead and back
+              if (abs(check_car_s-car_s) < MIN_OBS_DISTANCE){
+                if (check_car_s>car_s)
+                  forward_r = true;
+                // for backward check only portion of the min distance
+                else if (abs(check_car_s-car_s) < MIN_OBS_DISTANCE*0.3){
+                  backward_r = true;
+                }
+                right_lane_close = forward_r || backward_r;
+              }
+              else{
+
+              }
+            }
+    
           }
 
           //when possible return to center lane
@@ -185,16 +204,33 @@ int main() {
             lane = 1;
           }
           
-          //If the car in front is too close reduce the reference velocity at the rate of 7.24m per second
           if(current_lane_close){
-            ref_vel-=DECEL;
 
-            // Change lane heuristic (prefer change to right)
-            if(!right_lane_close){
-              lane += 1;
+            // if enough distance, reduce the reference velocity at the rate of 7.24m per second
+            // until same vel of car in front
+            if (distance_to_obj >= MIN_OBS_DISTANCE*0.2){
+              if (ref_vel - close_obj_vel > 0)
+                ref_vel -= DECEL;
+              else
+                ref_vel = close_obj_vel;
             }
-            else if(!left_lane_close){
-              lane -= 1;
+            else
+              ref_vel = close_obj_vel;
+
+            // Change lane based on emptiest lane
+            if (!left_lane_close && !right_lane_close){
+              if (left_closest_car > right_closest_car)
+                lane -= 1;
+              else
+                lane += 1;
+            }
+            else{
+              if(!left_lane_close){
+                lane -= 1;
+              }
+              else if(!right_lane_close){
+                lane += 1;
+              }
             }
           }
           //If the velocity of the car is less than 49.5mph then gradually increase it at 5m per second
@@ -202,9 +238,10 @@ int main() {
             ref_vel+=ACCEL;
           }
 
-          // Print turning information
-          std::cout<<"|car_d: "<< car_d<<"| L_Turn: "<<left_lane_close<<"| R_Turn: "<<right_lane_close<<"| C_Obs: "<<current_lane_close
-            <<"| Lane: "<<lane<<"| Ref_vel: "<<ref_vel<< std::endl;
+          // Debug info
+          // std::cout<<"|car_d: "<< car_d<<"| L obstacle: "<<left_lane_close<<"| R Obstacle: "<<right_lane_close
+          // <<"| C Obstale: "<<current_lane_close <<"| Lane: "<<lane<<"| Ref_vel: "<<ref_vel
+          // << " " << left_closest_car << " " << right_closest_car << std::endl;
 
           // *********************** Control path stuff **********************************
           vector<double> ptsx;
